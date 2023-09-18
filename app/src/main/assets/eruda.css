@@ -139,6 +139,10 @@ h2.eruda-title {
   top: 35px;
   left: 20.5px;
 }
+#eruda-info .eruda-userscripts > h2 > span.eruda-icon-eye {
+  position: relative;
+  right: 10px;
+}
 #eruda-info .eruda-user-agent > div.eruda-content {
   text-wrap: balance;
   text-align: center;

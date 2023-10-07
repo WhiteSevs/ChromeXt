@@ -1,6 +1,7 @@
 package org.matrix.chromext.hook
 
 import android.content.Context
+import android.util.DisplayMetrics
 import android.view.Menu
 import android.view.MenuInflater
 import android.view.MenuItem
@@ -97,6 +98,17 @@ object PageMenuHook : BaseHook() {
           }
         }
 
+    findMethod(proxy.customTabActivity) {
+          // public boolean onMenuOrKeyboardAction(int id, boolean fromMenu)
+          parameterTypes contentDeepEquals arrayOf(Int::class.java, Boolean::class.java) &&
+              returnType == Boolean::class.java
+        }
+        .hookBefore {
+          if (menuHandler(it.thisObject as Context, it.args[0] as Int)) {
+            it.result = true
+          }
+        }
+
     var findMenuHook: Unhook? = null
     findMenuHook =
         findMethod(proxy.chromeTabbedActivity) {
@@ -144,24 +156,16 @@ object PageMenuHook : BaseHook() {
                   // protected void updateRequestDesktopSiteMenuItem(Menu menu, @Nullable Tab
                   // currentTab, boolean canShowRequestDesktopSite, boolean isChromeScheme)
                   .hookBefore {
+                    if ((it.args[3] as Boolean)) return@hookBefore
                     val ctx = mContext.get(it.thisObject) as Context
                     Resource.enrich(ctx)
                     val menu = it.args[0] as Menu
                     Chrome.updateTab(it.args[1])
                     val url = getUrl()
-                    val skip =
-                        (menu.size() <= 20 || !(it.args[2] as Boolean) || (it.args[3] as Boolean))
-                    // Infalte only for the main_menu, which has more than 20 items at least
 
-                    if (skip && !isUserScript(url)) return@hookBefore
-
-                    if (!skip &&
-                        menu.getItem(0).hasSubMenu() &&
-                        readerMode.isInit() &&
-                        !Chrome.isBrave) {
-                      // The first menu item should be the @id/icon_row_menu_id
-
-                      val infoMenu = menu.getItem(0).getSubMenu()!!.getItem(3)
+                    val iconRowMenu = menu.getItem(0)
+                    if (iconRowMenu.hasSubMenu() && readerMode.isInit() && !Chrome.isBrave) {
+                      val infoMenu = iconRowMenu.getSubMenu()!!.getItem(3)
                       infoMenu.setIcon(R.drawable.ic_book)
                       infoMenu.setEnabled(true)
                       val mId = infoMenu::class.java.getDeclaredField("mId")
@@ -170,6 +174,10 @@ object PageMenuHook : BaseHook() {
                       mId.setAccessible(false)
                     }
 
+                    val skip = menu.size() <= 20 || !(it.args[2] as Boolean)
+                    // Inflate only for the main_menu, which has more than 20 items at least
+
+                    if (skip && !isUserScript(url)) return@hookBefore
                     MenuInflater(ctx).inflate(R.menu.main_menu, menu)
 
                     val mItems = menu::class.java.getDeclaredField("mItems")
@@ -188,6 +196,7 @@ object PageMenuHook : BaseHook() {
                       toShow.clear()
                       toShow.add(2)
                       if (skip) {
+                        // Show this menu for local preview pages (Custom Tab) of UserScripts
                         items.find { it.itemId == R.id.install_script_id }?.setVisible(true)
                         mItems.setAccessible(false)
                         return@hookBefore
@@ -197,6 +206,14 @@ object PageMenuHook : BaseHook() {
                     if (isChromeXtFrontEnd(url)) {
                       toShow.clear()
                       toShow.addAll(listOf(3, 4))
+                    }
+
+                    if (!Chrome.isVivaldi &&
+                        ctx.resources.configuration.smallestScreenWidthDp >=
+                            DisplayMetrics.DENSITY_XXHIGH &&
+                        toShow.size == 1 &&
+                        toShow.first() == 1) {
+                      iconRowMenu.setVisible(true)
                     }
 
                     val position =

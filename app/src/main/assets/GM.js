@@ -1,4 +1,5 @@
 const globalThis = GM.globalThis;
+const window = GM.globalThis;
 const self = GM.globalThis;
 const parent = GM.globalThis;
 const frames = GM.globalThis;
@@ -7,15 +8,16 @@ delete GM.globalThis;
 // Override possible references to the original window object.
 // Note that from the DevTools console, these objects are undefined if they are not used in the script debugging context.
 // However, one can break this jail using setTimeout or Function.
-// In case that some libraries export names globally, blocking of window is postoned.
 delete GM_info.script.code;
 delete GM_info.script.sync_code;
 delete GM.key;
 delete GM.name;
 Object.freeze(GM_info.script);
 const ChromeXt = GM.ChromeXt;
-if (typeof GM_xmlhttpRequest == "function" && !GM_xmlhttpRequest.strict)
+if (typeof GM_xmlhttpRequest == "function" && !GM_xmlhttpRequest.strict) {
+  GM_xmlhttpRequest.addCookie = GM_info.script.grants.includes("GM_cookie");
   Object.defineProperty(GM_xmlhttpRequest, "strict", { value: true });
+}
 // Kotlin separator
 
 function GM_addStyle(css) {
@@ -36,7 +38,10 @@ function GM_addStyle(css) {
 const unsafeWindow = window;
 // Kotlin separator
 
-const GM_log = console.info.bind(console, GM_info.script.name + ":");
+const GM_log = console.info.bind(
+  console,
+  GM_info.script.id.split(":").at(-1) + ":"
+);
 // Kotlin separator
 
 function GM_notification(details, ondone) {
@@ -91,7 +96,7 @@ function GM_notification(details, ondone) {
 }
 // Kotlin separator
 
-const GM_cookie = new (class {
+const GM_cookie = new (class CookieManager {
   #cache = [];
   get store() {
     return this.#cache;
@@ -107,7 +112,9 @@ const GM_cookie = new (class {
         if (!(e.type == "cookie" && data.id == payload.id)) return;
         const response = data.response.find((r) => r.id === 2);
         if (data.method == "Network.getCookies" && "result" in response)
-          self.#cache = response.result.cookies;
+          self.#cache = response.result.cookies.map(
+            (it) => new CookieParam(it)
+          );
         if (data.uuid == uuid) {
           if (typeof response != "object")
             reject(new TypeError(`Response not found for ${data.method}`));
@@ -121,35 +128,32 @@ const GM_cookie = new (class {
       ChromeXt.dispatch("cookie", payload);
     });
   }
-  export(url) {
-    if (typeof url == "string") url = new URL(url);
-    if (url.origin == location.origin) {
-      return this.store
-        .filter((item) => {
-          if (!("name" in item && "value" in item)) return false;
-          if (item.httpOnly !== true) return false;
-          if ("path" in item && !url.pathname.startsWith(item.path))
-            return false;
-          const expires = item.expirationDate || item.expires;
-          if (expires) return expires * 1000 > new Date().getTime();
-          return true;
-        })
-        .map((item) => item.name + "=" + item.value)
-        .join("; ");
+  export(url = location.origin, store, httpOnly = false) {
+    const cookies = store || this.store;
+    if (!Array.isArray(cookies)) return;
+    if (typeof url == "string") {
+      url = new URL(url);
+    } else if (!(url instanceof URL)) {
+      return;
     }
+    if (cookies == this.store && url.origin != location.origin) return;
+    return cookies
+      .map((it) => (it instanceof CookieParam ? it : new CookieParam(it)))
+      .filter((it) => it.match(url, httpOnly))
+      .map((cookie) => cookie.toHeader());
   }
   async list(details = { url: window.origin }, callback) {
     let cookies, error;
     try {
       if (typeof details != "object") throw TypeError("Invalid parameters");
-      const result = await this.#command("Network.getCookies", [
+      await this.#command("Network.getCookies", [
         details.url || location.origin,
       ]);
       const props = ["domain", "name", "path"].filter((key) => key in details);
       if (props.length == 0) {
-        cookies = result.cookies;
+        cookies = this.#cache;
       } else {
-        cookies = result.cookies.filter((item) => {
+        cookies = this.#cache.filter((item) => {
           for (const prop of props) {
             if (item[prop] !== details[prop]) return false;
           }
@@ -164,22 +168,139 @@ const GM_cookie = new (class {
     return cookies;
   }
   async #dispatch(method, details, callback) {
-    let error;
-    try {
-      return await this.#command(method, details);
-    } catch (e) {
-      error = e;
+    if (typeof callback == "function") {
+      let error;
+      try {
+        return await this.#command(method, details);
+      } catch (e) {
+        error = e;
+      }
+      callback(e.message);
+      if (error instanceof Error) throw error;
+    } else {
+      return this.#command(method, details);
     }
-    if (typeof callback == "function") callback(e.message);
-    if (error instanceof Error) throw error;
   }
-  async set(details, callback) {
-    return await this.#dispatch("Network.setCookie", details, callback);
+  set(details, callback) {
+    let cookies = details;
+    if (!Array.isArray(cookies)) cookies = [details];
+    return this.#dispatch("Network.setCookies", { cookies }, callback);
   }
-  async delete(details, callback) {
-    return await this.#dispatch("Network.deleteCookies", details, callback);
+  delete(details, callback) {
+    return this.#dispatch("Network.deleteCookies", details, callback);
   }
 })();
+
+class CookieParam {
+  #header;
+  constructor(data) {
+    if (
+      typeof data == "object" &&
+      typeof data.name == "string" &&
+      "value" in data
+    ) {
+      Object.assign(this, data);
+      if (typeof this.header == "string") {
+        this.#header = this.header;
+        delete this.header;
+      }
+    } else {
+      throw TypeError("Invalid parameters for cookie");
+    }
+  }
+  static fromHeader(str, url) {
+    const props = str
+      .split(";")
+      .map((it) => it.trim())
+      .filter((it) => it.length > 0);
+    const defn = props.shift().split("=");
+    if (defn.length < 2) return;
+    const cookie = new CookieParam({
+      name: defn.shift(),
+      value: defn.join("="),
+      header: str,
+    });
+    props.forEach((prop) => {
+      const parts = prop.split("=");
+      const key = parts.shift().toLowerCase();
+      var value = parts.join("=");
+      if (key === "expires") {
+        cookie.expires = new Date(value).getTime() / 1000;
+      } else if (key === "max-age") {
+        cookie.maxAge = Number(value);
+        cookie.expires = cookie.maxAge + new Date().getTime() / 1000;
+      } else if (key === "secure") {
+        cookie.secure = true;
+      } else if (key === "httponly") {
+        cookie.httpOnly = true;
+      } else {
+        cookie[key] = value;
+      }
+    });
+    cookie.url = url;
+    cookie.session = cookie.expires == -1;
+    return cookie;
+  }
+  /** @param {URL} url */
+  set url(url) {
+    if (!(url instanceof URL)) url = new URL(url || location.origin);
+    this.domain = this.domain || url.hostname;
+    if (url.port.length != 0) {
+      this.sourcePort = Number(url.port);
+    } else if (url.protocol == "https:") {
+      this.sourcePort = 443;
+    } else if (url.protocol == "http:") {
+      this.sourcePort = 80;
+    }
+    if (url.protocol.endsWith("s:")) this.sourceScheme = "Secure";
+  }
+  httpOnly = false;
+  path = "/";
+  secure = false;
+  expires = -1;
+  priority = "Medium";
+  sourceScheme = "NonSecure";
+  capitalize(s) {
+    return s && s[0].toUpperCase() + s.slice(1);
+  }
+  toHeader() {
+    if (typeof this.#header == "string") return this.#header;
+    let header = [this.name + "=" + this.value];
+    header.push(`Domain=${this.domain}`);
+    if (Number.isFinite(this.maxAge) && this.maxAge > 0) {
+      header.push(`Max-Age=${this.maxAge}`);
+    }
+    if (Number.isFinite(this.expires) && this.expires != -1) {
+      const date = new Date();
+      date.setTime(this.expires * 1000);
+      header.push(`expires=${date.toUTCString()}`);
+    }
+    const props = ["path", "sameSite", "httpOnly", "secure"];
+    for (const prop of props) {
+      if (!(prop in this)) continue;
+      const val = this[prop];
+      if (typeof val == "string" && val.length != 0) {
+        header.push(this.capitalize(prop) + `=${this.capitalize(val)}`);
+      } else if (val === true) {
+        header.push(this.capitalize(prop));
+      }
+    }
+    return header.join("; ");
+  }
+  match(url, httpOnly) {
+    if (!(url instanceof URL)) url = new URL(url);
+    if (httpOnly && this.httpOnly !== true) return false;
+    if ("path" in this && !url.pathname.startsWith(this.path)) return false;
+    if ("domain" in this) {
+      let domain = this.domain;
+      if (domain.startsWith(".")) domain = domain.slice(1);
+      if (!url.hostname.endsWith(domain)) return false;
+    }
+    const expires = this.expirationDate || this.expires;
+    if (expires > 0) return expires * 1000 > new Date().getTime();
+    return true;
+  }
+}
 // Kotlin separator
 
 function GM_setClipboard(text, info = { type: "text" }) {
@@ -369,6 +490,10 @@ function GM_xmlhttpRequest(details) {
   details.method = details.method
     ? details.method.toUpperCase()
     : fallback_method;
+  if (["GET", "HEAD"].includes(details.method)) {
+    delete details.data;
+    delete details.body;
+  }
 
   let useJSFetch = true;
   if (typeof details.forceCORS == "boolean") useJSFetch = !details.forceCORS;
@@ -378,14 +503,74 @@ function GM_xmlhttpRequest(details) {
     if (details instanceof Request && details.method != "GET") {
       details.data = details.data || (await details.blob());
     }
+
+    if (details.data instanceof FormData) {
+      if (details.binary !== true)
+        for (const value of details.data.values())
+          if (value instanceof Blob) {
+            details.binary = true;
+            break;
+          }
+      if (!details.binary) {
+        const form = Array.from(details.data.entries())
+          .map(([k, v]) => `${k}=${v}`)
+          .join("&");
+        if (details.method == "GET") {
+          if (!details.url.includes("?"))
+            details.url += "?" + encodeURIComponent(form);
+        } else {
+          details.headers.set(
+            "Content-Type",
+            "application/x-www-form-urlencoded"
+          );
+          details.data = form;
+        }
+      } else {
+        const parts = [];
+        const formboundary =
+          "------WebKitFormBoundary" +
+          Math.random().toString(36).slice(2, 10).toUpperCase() +
+          Math.random().toString(36).slice(2, 10).toUpperCase();
+        details.headers.set(
+          "Content-Type",
+          "multipart/form-data; boundary=" + formboundary.slice(2)
+        );
+        for (const [k, v] of details.data.entries()) {
+          parts.push(formboundary);
+          let disposition = `Content-Disposition: form-data; name="${k}"`;
+          if (v instanceof Blob) {
+            details.binary = true;
+            const name = v.name || "blob";
+            const type = v.type || "unknown";
+            disposition += `; filename="${name}"`;
+            parts.push(disposition);
+            parts.push(`Content-Type: ${type}`);
+            parts.push("");
+            const binary = new Uint8Array(await v.arrayBuffer());
+            parts.push(binary);
+          } else {
+            parts.push(disposition);
+            parts.push("");
+            parts.push(v);
+          }
+        }
+        parts.push(formboundary + "--");
+        const blob = [];
+        parts.forEach((d) => blob.push(d, "\r\n"));
+        details.data = new Blob(blob);
+      }
+    }
+
     if (
-      "data" in details &&
-      details.data != null &&
-      typeof details.data != "string"
+      details.data &&
+      typeof details.data != "string" &&
+      details.method != "GET" &&
+      details.binary !== true
     ) {
       details.binary = true;
     }
-    if ("binary" in details && "data" in details && details.binary) {
+
+    if ("data" in details && details.binary === true) {
       if (Array.isArray(details.data)) details.data = new Blob(details.data);
       switch (details.data.constructor) {
         case DataView:
@@ -400,8 +585,6 @@ function GM_xmlhttpRequest(details) {
             Array.from(details.data, (x) => String.fromCodePoint(x)).join("")
           );
           break;
-        default:
-          details.binary = false;
       }
     }
 
@@ -492,29 +675,47 @@ function GM_xmlhttpRequest(details) {
       sink.parse(data);
       if (type == "progress") {
         sink.writer.write(data);
+      } else if (type == "redirect" && xhr.redirect == "error") {
+        xhr.error = new Error("Redirection not allowed");
+        sink.dispatch("error");
+        xhr.abort("redirect");
       } else if (type == "load") {
         sink.writer
           .close()
           .then(() => resolve(xhr.response))
           .catch((error) => {
-            reject(
-              new TypeError("Fail to parse response data: " + error.message, {
-                cause: error,
-              })
-            );
+            // error might be caused by abort
+            if (error instanceof Error) {
+              reject(
+                new TypeError("Fail to parse response data: " + error.message, {
+                  cause: error,
+                })
+              );
+            }
           });
       } else if (["timeout", "error"].includes(type)) {
+        const writer = sink.writer; // To dispatch loadstart event
+        const cause = new Error(data.message);
+        cause.stack = data.stack;
         const error = new Error(
-          [data.status, data.statusText, data.message]
-            .filter((e) => e)
-            .join(", "),
+          [data.status, data.statusText].filter((e) => e).join(", "),
           {
-            cause: data.error || type.toUpperCase(),
+            cause,
           }
         );
         error.name = data.type;
         xhr.error = error;
-        xhr.abort(type);
+        xhr.response = data.error;
+        delete xhr.stack;
+        delete xhr.type;
+        if (xhr.response != undefined) {
+          writer
+            .close()
+            .then(() => xhr.abort(type))
+            .catch((e) => reject(e));
+        } else {
+          xhr.abort(type);
+        }
       }
     }
 
@@ -523,10 +724,11 @@ function GM_xmlhttpRequest(details) {
         uuid,
         abort: true,
       });
-      if (xhr.error instanceof Error) reject(xhr.error);
       revoke(listener);
+      if (xhr.error instanceof Error) reject(xhr.error);
       sink.writer.abort(type);
     };
+
     let request = details;
     if (
       !details.signal &&
@@ -553,10 +755,12 @@ function GM_xmlhttpRequest(details) {
         }
       }
     }
+
     xhr.binaryType = ["arraybuffer", "blob", "stream"].includes(
       xhr.responseType
     );
     xhr.readyState = 1;
+
     if (useJSFetch) {
       request.signal.addEventListener("abort", xhr.abort);
       await fetch(request)
@@ -603,6 +807,7 @@ function GM_xmlhttpRequest(details) {
           }
         });
     }
+
     if (!useJSFetch) {
       await prepare(details);
       if (details instanceof Request) {
@@ -617,7 +822,7 @@ function GM_xmlhttpRequest(details) {
       const origin = new URL(details.url).origin;
       if (
         location.origin == origin &&
-        GM_info.script.grants.includes("GM_cookie") &&
+        GM_xmlhttpRequest.addCookie &&
         !("cookie" in details) &&
         details.anonymous !== true
       ) {
@@ -625,8 +830,13 @@ function GM_xmlhttpRequest(details) {
           await GM_cookie.list();
         }
         request.cookie = GM_cookie.export(details.url);
+        GM_xmlhttpRequest.addCookie = false;
+      }
+      if (typeof request.cookie == "string") {
+        request.cookie = request.cookie.split("; ");
       }
 
+      if (!Array.isArray(request.cookie)) delete request.cookie;
       ChromeXt.dispatch("xmlhttpRequest", {
         id: GM_info.script.id,
         request,
@@ -705,39 +915,46 @@ class ResponseSink {
   parse(data) {
     if (typeof data != "object") return;
     for (const prop in data) {
-      if (prop == "header" && this.xhr.headers instanceof Headers) continue;
-      let val = data[prop];
+      if (prop == "headers" || prop == "status") continue;
+      const val = data[prop];
       if (typeof val == "function") continue;
       this.xhr[prop] = val;
     }
-    if (this.xhr.readyState != 1) return;
+    if (this.xhr.status == data.status) return;
+    // status change if there are redirections
+
+    this.xhr.status = data.status;
+
+    let headers = data.headers;
+    if (!(headers instanceof Headers)) {
+      const entries = Object.entries(headers);
+      headers = new Headers();
+      entries.forEach(([k, vs]) => {
+        for (const v of vs) headers.append(k, v);
+      });
+    }
+    this.xhr.headers = headers;
     this.xhr.readyState = 2;
-    const headers = data.headers;
-    this.xhr.headers = new Headers(headers);
-    this.xhr.responseHeaders = Object.entries(
-      Object.fromEntries(this.xhr.headers)
-    )
+    const responseHeaders = Object.entries(Object.fromEntries(headers))
       .map(([k, v]) => k.toLowerCase() + ": " + v)
       .join("\r\n");
-    this.xhr.getAllResponseHeaders = () => this.xhr.responseHeaders;
-    this.xhr.getResponseHeader = (headerName) =>
-      this.xhr.headers.get(headerName);
-    this.xhr.finalUrl = this.xhr.headers.get("Location") || this.xhr.url;
+    this.xhr.responseHeaders = responseHeaders;
+    this.xhr.getAllResponseHeaders = () => responseHeaders;
+    this.xhr.getResponseHeader = (headerName) => headers.get(headerName);
+    this.xhr.finalUrl = headers.get("Location") || this.xhr.url;
     this.xhr.responseURL = this.xhr.finalUrl;
-    if (this.xhr.finalUrl != this.xhr.url && this.xhr.redirect == "error") {
-      this.xhr.error = new Error("Redirection not allowed");
-      this.xhr.abort();
-    }
-    this.xhr.total = this.xhr.headers.get("Content-Length");
+    this.xhr.total = headers.get("Content-Length");
     if (this.xhr.total !== null) {
       this.xhr.lengthComputable = true;
       this.xhr.total = Number(this.xhr.total);
     }
+    if (this.xhr.finalUrl != this.xhr.url && this.xhr.redirect != "error")
+      this.dispatch("redirect", { ...this.xhr });
     if (data instanceof Response) return;
-    this.xhr.encoding = this.xhr.headers.get("Content-Encoding");
-    if (this.xhr.encoding != null) {
+    const encoding = headers.get("Content-Encoding");
+    if (encoding != null) {
       try {
-        this.ds = new DecompressionStream(this.xhr.encoding.toLowerCase());
+        this.ds = new DecompressionStream(encoding.toLowerCase());
       } catch {
         this.xhr.abort();
       }
@@ -763,8 +980,11 @@ class ResponseSink {
     this.dispatch("progress");
   }
   async close(_controller) {
+    if (this.#writer == undefined) return;
     const type =
-      this.xhr.overrideMimeType || this.xhr.headers.get("Content-Type") || "";
+      this.xhr.overrideMimeType ||
+      this.xhr.headers.get("Content-Type") ||
+      "text/xml";
     if (
       Array.isArray(this.xhr.response) &&
       this.xhr.response.length != 0 &&
@@ -856,13 +1076,22 @@ GM.bootstrap = () => {
   } else {
     const handler = {
       // A handler to block access to globalThis
-      window: { GM, ChromeXt: Symbol[GM.name] },
+      window: { GM },
+      libLoading: meta.requires.length > 0,
       keys: Array.from(ChromeXt.globalKeys),
+      deleteProperty(_target, prop) {
+        if (this.libLoading && prop == "__loading__") {
+          this.libLoading = false;
+          if (prop in this.window) return;
+        }
+        return delete this.window[prop];
+      },
       set(target, prop, value) {
         if (target[prop] != value || target.propertyIsEnumerable(prop)) {
           // Avoid redefining global non-enumerable classes, though they are accessible to the getter
           this.window[prop] = value;
         }
+        if (this.libLoading) Reflect.set(...arguments);
         return true;
       },
       get(target, prop, receiver) {
@@ -1043,7 +1272,7 @@ GM.bootstrap = () => {
     }
 
     GM_info.scriptHandler = "ChromeXt";
-    GM_info.version = "3.7.0";
+    GM_info.version = "3.8.0";
     Object.freeze(GM_info);
     ChromeXt.scripts.push(GM_info);
   }

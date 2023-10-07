@@ -76,7 +76,7 @@ object GM {
     val GM_info = JSONObject(mapOf("scriptMetaStr" to script.meta))
     GM_info.put("script", JSONObject().put("id", script.id))
     if (script.storage != null) GM_info.put("storage", script.storage)
-    code = "\n{const window=globalThis;\n${code}};"
+    code = "\ndelete window.__loading__;\n${code};"
     code = localScript.get("globalThis")!! + script.lib.joinToString("\n") + code
     codes.add(
         "(()=>{ const GM = {key:${Local.key}, name:'${Local.name}'}; const GM_info = ${GM_info}; GM_info.script.code = (key=null) => {${code}};\n${grants}GM.bootstrap();})();\n//# sourceURL=local://ChromeXt/${Uri.encode(script.id)}")
@@ -130,8 +130,17 @@ object Local {
             .bufferedReader()
             .use { it.readText() }
             .split("// Kotlin separator\n\n")
-    initChromeXt = localScript[0].replaceFirst("ChromeXt", name)
-    anchorInChromeXt = initChromeXt.split("\n").indexOfFirst { it.endsWith("// Kotlin anchor") } + 2
+
+    val seed = Random.nextDouble()
+    // Use empty lines to randomize anchorInChromeXt
+    val parts =
+        localScript[0]
+            .replaceFirst("ChromeXt", name)
+            .replaceFirst("ChromeXtUnlockKeyForInit", key.toString())
+            .split("\n")
+            .filter { if (it.length != 0) true else Random.nextDouble() > seed }
+    anchorInChromeXt = parts.indexOfFirst { it.endsWith("// Kotlin anchor") } + 2
+    initChromeXt = parts.joinToString("\n")
     openEruda =
         localScript[1]
             .replaceFirst("ChromeXt", name)

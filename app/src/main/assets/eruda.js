@@ -2,8 +2,7 @@ const ChromeXt = Symbol.ChromeXt.unlock(ChromeXtUnlockKeyForEruda, false);
 
 eruda._inLocalPage =
   ["content://", "file://"].includes(location.origin) ||
-  location.pathname.endsWith(".txt") ||
-  location.pathname.endsWith(".js");
+  location.pathname.endsWith(".txt");
 
 eruda._initDevTools = new Proxy(eruda._initDevTools, {
   getHeight(node, prop) {
@@ -57,36 +56,47 @@ eruda._initDevTools = new Proxy(eruda._initDevTools, {
         createHTML: (s) => s,
       });
     } catch {
-      stubHTMLPolicy = ChromeXt.trustedTypes.polices.values().next().value;
-      ChromeXt.trustedTypes.bypass = true;
+      if (typeof Element.prototype.setHTML != "function") return;
     }
     const _insertAdjacentHTML = HTMLElement.prototype.insertAdjacentHTML;
     HTMLDivElement.prototype.insertAdjacentHTML = function (p, t) {
-      return _insertAdjacentHTML.apply(this, [p, stubHTMLPolicy.createHTML(t)]);
+      if (stubHTMLPolicy != undefined) {
+        return _insertAdjacentHTML.apply(this, [
+          p,
+          stubHTMLPolicy.createHTML(t),
+        ]);
+      } else {
+        const div = document.createElement("div");
+        div.setHTML(t);
+        return this.insertAdjacentElement(p, div.children[0]);
+      }
     };
     const _html = eruda._$el.__proto__.html;
     eruda._$el.__proto__.html = function (t) {
-      return _html.apply(this, [stubHTMLPolicy.createHTML(t)]);
+      if (stubHTMLPolicy != undefined) {
+        return _html.apply(this, [stubHTMLPolicy.createHTML(t)]);
+      } else {
+        for (const node of this) node.setHTML(t);
+      }
     };
-    if (typeof Element.prototype.setHTML == "function") {
-      const _enable = eruda.chobitsu.domain("Overlay").enable;
-      eruda.chobitsu.domain("Overlay").enable = function () {
-        if (_enable.enabled) return;
-        _enable.enabled = true;
-        _enable.apply(this, arguments);
-        const overlay =
-          eruda._container.parentNode.querySelector(
-            ".__chobitsu-hide__"
-          ).shadowRoot;
-        const tooltip = overlay.querySelector("div.luna-dom-highlighter > div");
-        Object.defineProperty(tooltip, "innerHTML", {
-          set(value) {
-            this.setHTML(value);
-          },
-        });
-      };
-    }
     this.typesHooked = true;
+    if (typeof Element.prototype.setHTML != "function") return;
+    const _enable = eruda.chobitsu.domain("Overlay").enable;
+    eruda.chobitsu.domain("Overlay").enable = function () {
+      if (_enable.enabled) return;
+      _enable.enabled = true;
+      _enable.apply(this, arguments);
+      const overlay =
+        eruda._container.parentNode.querySelector(
+          ".__chobitsu-hide__"
+        ).shadowRoot;
+      const tooltip = overlay.querySelector("div.luna-dom-highlighter > div");
+      Object.defineProperty(tooltip, "innerHTML", {
+        set(value) {
+          this.setHTML(value);
+        },
+      });
+    };
   },
   apply(target, thisArg, args) {
     this.bypassTrustedTypes();
@@ -275,8 +285,9 @@ eruda.Resources = class extends eruda.Resources {
       })
       .on("click", ".eruda-command", (e) => {
         const index = e.curTarget.dataset.index;
-        this._command[index].listener(e);
-        eruda.hide();
+        const hide = this._command[index].listener(e);
+        if (hide !== false) eruda.hide();
+        this.refreshCommand();
       });
   }
   refresh() {
@@ -285,12 +296,13 @@ eruda.Resources = class extends eruda.Resources {
   refreshCommand() {
     this._command = ChromeXt.commands.filter((m) => m.enabled);
     const commands = this._command
-      .map(
-        (cmd, index) =>
-          `<span data-index=${index} class="${c("command")}">${
-            cmd.title
-          }</span>`
-      )
+      .map(function (cmd, index) {
+        let title = cmd.title.toString();
+        if (typeof cmd.title == "function") {
+          title = cmd.title(index);
+        }
+        return `<span data-index=${index} class="${c("command")}">${title}</span>`;
+      })
       .join("");
     this._$command.html(
       `<h2 class="${c("title")}">UserScript Commands</h2>` +

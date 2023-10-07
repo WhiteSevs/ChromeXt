@@ -38,6 +38,9 @@
   font-size: 16px;
   transform: translate(-2px, 0.5px);
 }
+#eruda-info .eruda-userscripts > h2 > span.eruda-icon-eye {
+  transform: translate(0px, -6px);
+}
 div.eruda-btn.eruda-search {
   margin-top: 4px;
 }

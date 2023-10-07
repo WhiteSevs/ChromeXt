@@ -2,9 +2,7 @@ package org.matrix.chromext.utils
 
 import android.util.Base64
 import java.io.IOException
-import java.net.CookieHandler
-import java.net.CookieManager
-import java.net.CookiePolicy
+import java.net.HttpCookie
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
@@ -15,32 +13,34 @@ import org.matrix.chromext.Listener
 import org.matrix.chromext.script.Local
 
 class XMLHttpRequest(id: String, request: JSONObject, uuid: Double, currentTab: Any?) {
-  val response = JSONObject(mapOf("id" to id, "uuid" to uuid))
-  val request = request
   val currentTab = currentTab
-  var connection: HttpURLConnection? = null
+  val request = request
+  val response = JSONObject(mapOf("id" to id, "uuid" to uuid))
 
-  val url = URL(request.optString("url"))
-  val method = request.optString("method")
-  val headers = request.optJSONObject("headers")
-  val followRedirects = request.optString("redirect") != "error"
-  val binary = request.optBoolean("binary")
+  var connection: HttpURLConnection? = null
+  var cookies: List<HttpCookie>
+
   val anonymous = request.optBoolean("anonymous")
+  val binary = request.optBoolean("binary")
+  val buffersize = request.optInt("buffersize", 8)
+  val cookie = request.optJSONArray("cookie")
+  val headers = request.optJSONObject("headers")
+  val method = request.optString("method")
   val nocache = request.optBoolean("nocache")
   val timeout = request.optInt("timeout")
-  val buffersize = request.optInt("buffersize", 8)
   val responseType = request.optString("responseType")
+  val url = URL(request.optString("url"))
+  val uri = url.toURI()
 
   init {
-    val manager = CookieHandler.getDefault() as CookieManager
-    if (anonymous) {
-      manager.setCookiePolicy(CookiePolicy.ACCEPT_NONE)
-      val uri = url.toURI()
-      val cookieStore = Chrome.cookieStore
-      cookieStore.get(uri).forEach { cookieStore.remove(uri, it) }
-    } else {
-      manager.setCookiePolicy(CookiePolicy.ACCEPT_ORIGINAL_SERVER)
+    if (cookie != null && !anonymous) {
+      for (i in 0 until cookie.length()) {
+        runCatching {
+          HttpCookie.parse(cookie!!.getString(i)).forEach { Chrome.cookieStore.add(uri, it) }
+        }
+      }
     }
+    cookies = Chrome.cookieStore.get(uri)
   }
 
   fun abort() {
@@ -51,12 +51,13 @@ class XMLHttpRequest(id: String, request: JSONObject, uuid: Double, currentTab: 
     connection = url.openConnection() as HttpURLConnection
     with(connection!!) {
       setRequestMethod(method)
+      setInstanceFollowRedirects(request.optString("redirect") != "manual")
       headers?.keys()?.forEach { setRequestProperty(it, headers.optString(it)) }
-      setInstanceFollowRedirects(followRedirects)
       setUseCaches(!nocache)
       setConnectTimeout(timeout)
-      if (request.has("cookie") && !anonymous)
-          addRequestProperty("Cookie", request.optString("cookie"))
+
+      if (!anonymous && cookies.size > 0)
+          setRequestProperty("Cookie", cookies.map { it.toString() }.joinToString("; "))
 
       if (request.has("user")) {
         val user = request.optString("user")
@@ -69,11 +70,14 @@ class XMLHttpRequest(id: String, request: JSONObject, uuid: Double, currentTab: 
       runCatching {
             if (method != "GET" && request.has("data")) {
               val input = request.optString("data")
-              if (binary) {
-                outputStream.write(Base64.decode(input, Base64.DEFAULT))
-              } else {
-                outputStream.write(input.toByteArray())
-              }
+              val bytes =
+                  if (binary) {
+                    Base64.decode(input, Base64.DEFAULT)
+                  } else {
+                    input.toByteArray()
+                  }
+              setFixedLengthStreamingMode(bytes.size)
+              outputStream.write(bytes)
             }
 
             data.put("status", responseCode)
@@ -82,8 +86,10 @@ class XMLHttpRequest(id: String, request: JSONObject, uuid: Double, currentTab: 
             data.put("headers", JSONObject(headers))
             val binary =
                 responseType !in listOf("", "text", "document", "json") ||
-                    headers.containsKey("Content-Encoding") ||
-                    (headers.get("Content-Type")?.optString(0, "")?.contains("charset") == true)
+                    contentEncoding != null ||
+                    (contentType != null &&
+                        contentType.contains("charset") &&
+                        !contentType.contains("utf-8"))
             data.put("binary", binary)
 
             val buffer = ByteArray(buffersize * DEFAULT_BUFFER_SIZE)
@@ -106,27 +112,28 @@ class XMLHttpRequest(id: String, request: JSONObject, uuid: Double, currentTab: 
               response("progress", data, false)
               data.remove("headers")
             }
-            response("load", data, false)
+            response("load", data)
           }
           .onFailure {
             if (it is IOException) {
               data.put("type", it::class.java.name)
               data.put("message", it.message)
+              data.put("stack", it.stackTraceToString())
               errorStream?.bufferedReader()?.use { it.readText() }?.let { data.put("error", it) }
-              // Log.d("XMLHttpRequest failed with ${url}: " + it.toString())
               if (it is SocketTimeoutException) {
                 response("timeout", data.put("bytesTransferred", it.bytesTransferred))
               } else {
                 response("error", data)
               }
-            } else {
-              Log.ex(it)
             }
           }
     }
+    if (!anonymous && connection != null) {
+      Chrome.storeCoookies(this, connection!!.headerFields)
+    }
   }
 
-  private fun response(
+  fun response(
       type: String,
       data: JSONObject = JSONObject(),
       disconnect: Boolean = true,

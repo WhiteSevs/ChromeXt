@@ -36,6 +36,7 @@ import org.matrix.chromext.script.parseScript
 import org.matrix.chromext.utils.ERUD_URL
 import org.matrix.chromext.utils.Log
 import org.matrix.chromext.utils.XMLHttpRequest
+import org.matrix.chromext.utils.invalidUserScriptUrls
 import org.matrix.chromext.utils.isChromeXtFrontEnd
 import org.matrix.chromext.utils.isDevToolsFrontEnd
 import org.matrix.chromext.utils.isUserScript
@@ -47,7 +48,7 @@ object Listener {
   val xmlhttpRequests = mutableMapOf<Double, XMLHttpRequest>()
   val allowedActions =
       mapOf(
-          "userscript" to listOf("installScript"),
+          "userscript" to listOf("block", "installScript"),
           "front-end" to listOf("inspect_pages", "userscript", "extension"),
           "devtools" to listOf("websocket"),
       )
@@ -76,14 +77,9 @@ object Listener {
   }
 
   private fun checkPermisson(action: String, key: Double, tab: Any?): Boolean {
+    if (key != Local.key) return false
     val url = Chrome.getUrl(tab)!!
     if (url.endsWith(".txt")) return false
-    if (parseOrigin(url) == null) return true
-    if (!isChromeXtFrontEnd(url) &&
-        !isDevToolsFrontEnd(url) &&
-        !isUserScript(url) &&
-        key != Local.key)
-        return false
     if (isUserScript(url) && !allowedActions.get("userscript")!!.contains(action)) return false
     if (allowedActions.get("front-end")!!.contains(action) && !isChromeXtFrontEnd(url)) return false
     if (allowedActions.get("devtools")!!.contains(action) && !isDevToolsFrontEnd(url)) return false
@@ -113,8 +109,8 @@ object Listener {
     runCatching {
           val data = JSONObject(text)
           val action = data.getString("action")
+          val key = data.getDouble("key")
           val payload = data.optString("payload")
-          val key = data.optDouble("key")
           if (checkPermisson(action, key, currentTab)) {
             val callback = on(action, payload, currentTab)
             if (callback != null) Chrome.evaluateJavascript(listOf(callback), currentTab)
@@ -140,6 +136,11 @@ object Listener {
         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
         clipboard.setPrimaryClip(clipData)
       }
+      "block" -> {
+        val url = Chrome.getUrl(currentTab)
+        if (isUserScript(url)) invalidUserScriptUrls.add(url!!)
+        callback = "if (Symbol.ChromeXt) Symbol.ChromeXt.lock(${Local.key},'${Local.name}');"
+      }
       "installScript" -> {
         val script = parseScript(payload)
         if (script == null) {
@@ -154,7 +155,7 @@ object Listener {
         }
       }
       "notification" -> {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || Chrome.channel == null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
           callback = "console.error('notification API requires Android Oreo')"
           return callback
         }
@@ -165,8 +166,10 @@ object Listener {
         val text = detail.getString("text")
         val timeout = detail.getLong("timeout")
         val ctx = Chrome.getContext()
+        var channel = "xposed_notification"
+        if (detail.optBoolean("silent")) channel += "_slient"
         val builder =
-            Notification.Builder(ctx, "ChromeXt")
+            Notification.Builder(ctx, channel)
                 .setContentTitle(title)
                 .setContentText(text)
                 .setSmallIcon(
@@ -176,11 +179,6 @@ object Listener {
                 .setAutoCancel(true)
                 .setLocalOnly(true)
                 .setOnlyAlertOnce(true)
-        if (detail.optBoolean("silent")) {
-          Chrome.channel.setImportance(NotificationManager.IMPORTANCE_LOW)
-        } else {
-          Chrome.channel.setImportance(NotificationManager.IMPORTANCE_DEFAULT)
-        }
         if (detail.optBoolean("onclick")) {
           builder.setContentIntent(ScriptNotification.newIntent(id, uuid))
           tabNotification.put(uuid, currentTab!!)
@@ -242,6 +240,7 @@ object Listener {
         }
       }
       "cookie" -> {
+        if (WebViewHook.isInit) WebView.setWebContentsDebuggingEnabled(true)
         val detail = JSONObject(payload)
         val method = detail.getString("method")
         val params = detail.optJSONObject("params")
@@ -257,8 +256,9 @@ object Listener {
           }
           return true
         }
+        val url = Chrome.getUrl(currentTab)
         Chrome.IO.submit {
-          val tabId = Chrome.getTabId(currentTab)
+          val tabId = Chrome.getTabId(currentTab, url)
           val client = DevSessions.new(tabId)
           Chrome.IO.submit { client.listen { if (!checkResult(it)) client.close() } }
           client.command(null, "Network.enable", JSONObject())

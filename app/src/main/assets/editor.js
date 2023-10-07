@@ -1,3 +1,5 @@
+const isSandboxed = ["raw.githubusercontent.com"].includes(location.hostname);
+
 async function installScript(force = false) {
   const dialog = document.querySelector("dialog#confirm");
   if (!force) {
@@ -9,32 +11,37 @@ async function installScript(force = false) {
   }
 }
 
-function renderEditor(code, checkEncoding) {
+function renderEditor(code, alertEncoding) {
   let scriptMeta = document.querySelector("#meta");
   if (scriptMeta) return;
   const separator = "==/UserScript==\n";
   const script = code.innerHTML.split(separator);
   if (separator.length == 1) return;
-  scriptMeta = document.createElement("pre");
-  scriptMeta.innerHTML = (script.shift() + separator).replace(
+  let html = (script.shift() + separator).replace(
     "GM.ChromeXt",
     "<em>GM.ChromeXt</em>"
   );
+  for (const api of ["GM_notification", "GM_setClipboard", "GM_cookie"]) {
+    html = html.replace(api, `<span>${api}</span>`);
+  }
+  scriptMeta = document.createElement("pre");
+  scriptMeta.innerHTML = html;
   code.innerHTML = script.join(separator);
   code.id = "code";
   code.removeAttribute("style");
   scriptMeta.id = "meta";
   document.body.prepend(scriptMeta);
 
-  if (checkEncoding) {
+  if (alertEncoding) {
     const msg =
-      "Current script may contain badly decoded text.\n\nTo fix possible issues, you can download this script and open it locally.";
+      "Current script may contain badly encoded text.\n\nTo fix possible issues, you can download this script and open it locally.";
     createDialog(msg, false);
   } else {
     const msg =
-      "Code editor is blocked on this page.\n\nPlease use page menu to install this UserScript, or reload current page to enable the editor.";
+      "Code editor is blocked on this page.\n\nPlease use the menu to install this UserScript, or reload the page to solve this problem.";
     createDialog(msg);
     setTimeout(fixDialog);
+    // setTimeout is not working in sandboxed pages, and thus can be used for detecting sandboxed pages
   }
 
   scriptMeta.setAttribute("contenteditable", true);
@@ -92,16 +99,8 @@ function fixDialog() {
 }
 
 async function prepareDOM() {
-  const tags = Array.from(document.querySelectorAll("*")).map((e) => e.tagName);
-  if (
-    JSON.stringify(tags) !==
-    JSON.stringify(["HTML", "HEAD", "META", "BODY", "PRE"])
-  ) {
-    Symbol.ChromeXt.lock(Math.random(), Math.random().toString());
-    throw new Error("Insecure environment for ChromeXt");
-  } else {
-    Symbol.installScript = installScript;
-  }
+  if (Symbol.ChromeXt == undefined) return;
+  if (document.querySelector("script,div,p") != null) return;
   const meta = document.createElement("meta");
   const style = document.createElement("style");
 
@@ -114,15 +113,20 @@ async function prepareDOM() {
   style.textContent = _editor_style;
 
   const code = document.querySelector("body > pre");
+  if (document.readyState == "loading") {
+    if (isSandboxed) {
+      return prepareDOM();
+      // EventListeners are unavailable in sandboxed pages
+    } else {
+      return document.addEventListener("DOMContentLoaded", prepareDOM);
+    }
+  }
+  Symbol.installScript = installScript;
   document.head.appendChild(meta);
   document.head.appendChild(style);
 
-  const checkEncoding = !(await fixEncoding(true, true, code));
-  renderEditor(code, checkEncoding);
+  const alertEncoding = !(await fixEncoding(true, true, code));
+  renderEditor(code, alertEncoding);
 }
 
-if (document.readyState != "loading") {
-  prepareDOM();
-} else {
-  window.addEventListener("DOMContentLoaded", prepareDOM);
-}
+prepareDOM();

@@ -1,6 +1,5 @@
 package org.matrix.chromext.proxy
 
-import android.app.Activity
 import android.content.Context
 import android.os.Build
 import android.os.Environment
@@ -9,7 +8,6 @@ import android.view.View
 import android.view.View.OnClickListener
 import java.io.File
 import java.io.FileReader
-import java.lang.reflect.Modifier
 import org.json.JSONObject
 import org.matrix.chromext.Chrome
 import org.matrix.chromext.Listener
@@ -17,7 +15,6 @@ import org.matrix.chromext.script.Local
 import org.matrix.chromext.script.ScriptDbManager
 import org.matrix.chromext.utils.Log
 import org.matrix.chromext.utils.findField
-import org.matrix.chromext.utils.findFieldOrNull
 import org.matrix.chromext.utils.findMethod
 import org.matrix.chromext.utils.hookBefore
 
@@ -27,21 +24,6 @@ object PreferenceProxy {
   val developerSettings =
       Chrome.load("org.chromium.chrome.browser.tracing.settings.DeveloperSettings")
   val chromeTabbedActivity = UserScriptProxy.chromeTabbedActivity
-
-  // val tabWebContentsUserData =
-  //     Chrome.load("org.chromium.chrome.browser.tab.TabFavicon").superclass as Class<*>
-  // val overscrollRefreshHandler = Chrome.load("org.chromium.ui.OverscrollRefreshHandler")
-
-  val intentHandler =
-      // Grep 'Ignoring internal Chrome URL from untrustworthy source.' to get the class
-      // org/chromium/chrome/browser/IntentHandler.java
-      findField(Chrome.load("org.chromium.chrome.browser.app.ChromeActivity")) {
-            Modifier.isFinal(modifiers) &&
-                findFieldOrNull(type, true) { type == Pair::class.java } != null &&
-                findFieldOrNull(type, true) { type == Activity::class.java } != null
-          }
-          .type
-
   val emptyTabObserver =
       Chrome.load("org.chromium.chrome.browser.login.ChromeHttpAuthHandler").superclass as Class<*>
 
@@ -85,7 +67,7 @@ object PreferenceProxy {
     val sharedPref = ctx.getSharedPreferences("ChromeXt", Context.MODE_PRIVATE)
 
     var summary = "Click to install eruda, size around 0.5 MiB"
-    if (Local.eruda_version != "latest") {
+    if (Local.eruda_version != null) {
       summary = "Current version: v" + Local.eruda_version
     }
     setSummary.invoke(preferences["eruda"], summary)
@@ -161,7 +143,7 @@ object PreferenceProxy {
             "exit" to
                 fun(_: Any) {
                   if (Chrome.isDev || Chrome.isVivaldi) {
-                    Log.toast(ctx, "This function is not available for your Chrome build")
+                    Log.toast(ctx, "Feature unavailable")
                     return
                   }
                   with(
@@ -185,7 +167,7 @@ object PreferenceProxy {
                     }
                   } else {
                     setChecked.invoke(obj, false)
-                    Log.toast(ctx, "Feature unavaible for your Chrome or Android versions")
+                    Log.toast(ctx, "Feature unavailable")
                   }
                 },
             "keep_storage" to
@@ -212,6 +194,11 @@ object PreferenceProxy {
                       clear()
                       apply()
                     }
+                  }
+                  val file = File(ctx.filesDir, "Eruda.js")
+                  if (file.exists()) {
+                    file.delete()
+                    Local.eruda_version = null
                   }
                   ctx.deleteDatabase("userscript")
                   Log.toast(ctx, "ChromeXt data are reset")

@@ -1,6 +1,14 @@
+"use strict";
+
 if (typeof Symbol.ChromeXt == "undefined") {
   const initKey = ChromeXtUnlockKeyForInit;
   // Used to lock and unlock ChromeXt;
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible")
+      ChromeXt.dispatch("focus", undefined, initKey);
+  });
+  // update current active tab
 
   const props = {
     Array: Object.getOwnPropertyNames(Array.prototype),
@@ -178,6 +186,7 @@ if (typeof Symbol.ChromeXt == "undefined") {
             const type = res.headers.get("Content-Type").trim();
             if (
               type.startsWith("text/javascript") ||
+              type.startsWith("application/javascript") ||
               type.startsWith("text/plain")
             ) {
               this.security = secure;
@@ -215,8 +224,8 @@ if (typeof Symbol.ChromeXt == "undefined") {
       });
     }
 
-    dispatch(action, payload) {
-      this.isLocked(true);
+    dispatch(action, payload, key) {
+      this.isLocked(key != initKey);
       if (action != "block" && this.#security != secure) {
         const error = new backup.Error(
           `ChromeXt called with security level: ${this.#security}`,

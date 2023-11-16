@@ -21,35 +21,23 @@ import org.matrix.chromext.utils.*
 
 object readerMode {
   val ID = 31415926
-  private var readerModeManager: Class<*>? = null
 
-  fun isInit(): Boolean {
-    return readerModeManager != null
-  }
+  fun activate() {
+    @Suppress("UNCHECKED_CAST")
+    val observers = (PageMenuProxy.mObservers.get(Chrome.getTab()) as Iterable<Any>).toList()
+    val readerModeManager =
+        observers.find {
+          it::class.java.interfaces.size == 1 &&
+              findFieldOrNull(it::class.java) { type == PageMenuProxy.propertyModel } != null
+        }!!
 
-  fun init(managerClass: Class<*>) {
-    readerModeManager = managerClass
-  }
-
-  fun enable() {
-    val mDistillerUrl =
-        readerModeManager!!.declaredFields.filter { it.type == UserScriptProxy.gURL }.last()!!
     val activateReaderMode =
         // There exist other methods with the same signatures
-        findMethod(readerModeManager!!) {
+        findMethod(readerModeManager::class.java) {
           parameterTypes.size == 0 && returnType == Void.TYPE && name != "destroy"
         }
 
-    val manager = readerModeManager!!.declaredConstructors[0].newInstance(Chrome.getTab(), null)
-
-    mDistillerUrl.setAccessible(true)
-    mDistillerUrl.set(
-        manager,
-        UserScriptProxy.gURL.declaredConstructors[1].newInstance(
-            "https://github.com/JingMatrix/ChromeXt"))
-    mDistillerUrl.setAccessible(false)
-
-    activateReaderMode.invoke(manager)
+    activateReaderMode.invoke(readerModeManager)
   }
 }
 
@@ -65,7 +53,7 @@ object PageMenuHook : BaseHook() {
 
     fun menuHandler(ctx: Context, id: Int): Boolean {
       if (id == readerMode.ID) {
-        readerMode.enable()
+        readerMode.activate()
         return true
       }
       when (ctx.resources.getResourceName(id)) {
@@ -114,11 +102,13 @@ object PageMenuHook : BaseHook() {
         findMethod(proxy.chromeTabbedActivity) {
               parameterTypes.size == 0 &&
                   returnType.isInterface() &&
-                  returnType.declaredMethods.size > 6
+                  returnType.declaredMethods.size >= 6
             }
+            // public AppMenuPropertiesDelegate createAppMenuPropertiesDelegate()
             .hookAfter {
               findMenuHook!!.unhook()
               val appMenuPropertiesDelegateImpl = it.result::class.java.superclass as Class<*>
+              // Can be found by searching `Android.PrepareMenu`
               val mContext =
                   findField(appMenuPropertiesDelegateImpl, true) { type == Context::class.java }
               mContext.setAccessible(true)
@@ -146,25 +136,20 @@ object PageMenuHook : BaseHook() {
               }
 
               findMethod(appMenuPropertiesDelegateImpl, true) {
-                    parameterTypes contentDeepEquals
-                        arrayOf(
-                            Menu::class.java,
-                            proxy.tab,
-                            Boolean::class.java,
-                            Boolean::class.java) && returnType == Void.TYPE
+                    parameterTypes.size == 2 &&
+                        parameterTypes.first() == Menu::class.java &&
+                        returnType == Void.TYPE
                   }
-                  // protected void updateRequestDesktopSiteMenuItem(Menu menu, @Nullable Tab
-                  // currentTab, boolean canShowRequestDesktopSite, boolean isChromeScheme)
-                  .hookBefore {
-                    if ((it.args[3] as Boolean)) return@hookBefore
+                  // public void prepareMenu(Menu menu, AppMenuHandler handler)
+                  .hookAfter inflate@{
                     val ctx = mContext.get(it.thisObject) as Context
                     Resource.enrich(ctx)
+
                     val menu = it.args[0] as Menu
-                    Chrome.updateTab(it.args[1])
                     val url = getUrl()
 
                     val iconRowMenu = menu.getItem(0)
-                    if (iconRowMenu.hasSubMenu() && readerMode.isInit() && !Chrome.isBrave) {
+                    if (iconRowMenu.hasSubMenu() && !Chrome.isBrave) {
                       val infoMenu = iconRowMenu.getSubMenu()!!.getItem(3)
                       infoMenu.setIcon(R.drawable.ic_book)
                       infoMenu.setEnabled(true)
@@ -174,10 +159,10 @@ object PageMenuHook : BaseHook() {
                       mId.setAccessible(false)
                     }
 
-                    val skip = menu.size() <= 20 || !(it.args[2] as Boolean)
+                    val skip = menu.size() <= 20 || isChromeScheme(url)
                     // Inflate only for the main_menu, which has more than 20 items at least
 
-                    if (skip && !isUserScript(url)) return@hookBefore
+                    if (skip && !isUserScript(url)) return@inflate
                     MenuInflater(ctx).inflate(R.menu.main_menu, menu)
 
                     val mItems = menu::class.java.getDeclaredField("mItems")
@@ -199,7 +184,7 @@ object PageMenuHook : BaseHook() {
                         // Show this menu for local preview pages (Custom Tab) of UserScripts
                         items.find { it.itemId == R.id.install_script_id }?.setVisible(true)
                         mItems.setAccessible(false)
-                        return@hookBefore
+                        return@inflate
                       }
                     }
 
@@ -234,24 +219,6 @@ object PageMenuHook : BaseHook() {
                     for (i in 0..3) items.removeLast()
                     mItems.setAccessible(false)
                   }
-            }
-
-    var findReaderHook: Unhook? = null
-    findReaderHook =
-        findMethod(proxy.tabImpl) {
-              parameterTypes contentDeepEquals arrayOf(proxy.emptyTabObserver) &&
-                  returnType == Void.TYPE
-              // There exist other methods with the same signatures
-            }
-            // public void addObserver(TabObserver observer)
-            .hookAfter {
-              val subType = it.args[0]::class.java
-              if (subType.interfaces.size == 1 &&
-                  findFieldOrNull(subType) { type == proxy.propertyModel } != null) {
-                readerMode.init(subType)
-                Chrome.updateTab(it.thisObject)
-                findReaderHook!!.unhook()
-              }
             }
   }
 }

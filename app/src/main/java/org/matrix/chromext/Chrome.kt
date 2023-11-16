@@ -8,6 +8,7 @@ import android.net.http.HttpResponseCache
 import android.os.Build
 import android.os.Handler
 import java.io.File
+import java.io.FileReader
 import java.lang.ref.WeakReference
 import java.net.CookieManager
 import java.net.HttpCookie
@@ -38,6 +39,10 @@ object Chrome {
   var isEdge = false
   var isSamsung = false
   var isVivaldi = false
+  var isCocCoc = false
+
+  var version: String? = null
+  var packageName: String? = null
 
   val IO = Executors.newCachedThreadPool()
   val cookieStore = CookieManager().getCookieStore()
@@ -47,14 +52,17 @@ object Chrome {
     mContext = WeakReference(ctx)
 
     if (initialized || packageName == null) return
+    this.packageName = packageName
 
     isBrave = packageName.startsWith("com.brave.browser")
+    isCocCoc = packageName.startsWith("com.coccoc.trinhduyet")
     isDev = packageName.endsWith("canary") || packageName.endsWith("dev")
     isEdge = packageName.startsWith("com.microsoft.emmx")
     isSamsung = packageName.startsWith("com.sec.android.app.sbrowser")
     isVivaldi = packageName == "com.vivaldi.browser"
     @Suppress("DEPRECATION") val packageInfo = ctx.packageManager?.getPackageInfo(packageName, 0)
-    Log.i("Package: ${packageName}, v${packageInfo?.versionName}")
+    version = packageInfo?.versionName
+    Log.i("Package: ${packageName}, v${version}")
 
     setupHttpCache(ctx)
     saveRedirectCookie()
@@ -275,6 +283,28 @@ object Chrome {
       if (condition.invoke(tab)) tabs.add(tab.getString("id"))
     }
     return tabs
+  }
+
+  private fun setFlag(name: String, value: Int): Boolean {
+    val ctx = getContext()
+    val localState = File(ctx.filesDir, "../app_chrome/Local State")
+    if (!localState.exists()) return false
+    val config = JSONObject(FileReader(localState).use { it.readText() })
+    val labs = config.getJSONObject("browser").getJSONArray("enabled_labs_experiments")
+    val newFlag = name + "@" + value
+    var flagFound = false
+    for (i in 0 until labs.length()) {
+      val flag = labs.getString(i)
+      if (flag == newFlag) return false
+      if (flag.startsWith(name + "@")) {
+        labs.put(i, newFlag)
+        flagFound = true
+        break
+      }
+    }
+    if (!flagFound) labs.put(newFlag)
+    localState.outputStream().write(config.toString().toByteArray())
+    return true
   }
 }
 

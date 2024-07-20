@@ -8,8 +8,11 @@ import android.view.View
 import android.view.View.OnClickListener
 import android.view.ViewGroup
 import android.widget.ImageView
+import android.widget.PopupWindow
+import android.widget.TextView
 import de.robv.android.xposed.XC_MethodHook.Unhook
 import java.lang.Class
+import java.lang.ref.WeakReference
 import org.matrix.chromext.Chrome
 import org.matrix.chromext.Listener
 import org.matrix.chromext.R
@@ -20,6 +23,7 @@ import org.matrix.chromext.utils.*
 object ContextMenuHook : BaseHook() {
 
   val erudaMenuId = 31415926
+  private var text: WeakReference<TextView>? = null
 
   private fun openEruda(url: String) {
     if (WebViewHook.isInit) {
@@ -50,6 +54,7 @@ object ContextMenuHook : BaseHook() {
   }
 
   private var actionModeFinder: Unhook? = null
+  private var popupWindowFinder: Unhook? = null
 
   private fun hookActionMode(cls: Class<*>) {
     actionModeFinder?.unhook()
@@ -73,9 +78,64 @@ object ContextMenuHook : BaseHook() {
         }
   }
 
+  private fun hookPopupWindow(cls: Class<*>) {
+    popupWindowFinder?.unhook()
+    cls.declaredConstructors.first().hookAfter {
+      val ctx = it.args[0] as Context
+      Resource.enrich(ctx)
+      val popupWindow = it.thisObject as PopupWindow
+      val view = popupWindow.contentView
+      if (!(view is ViewGroup && view.getChildAt(0) is TextView)) return@hookAfter
+      val sampleView = view.getChildAt(0) as TextView
+      val textView = TextView(ctx)
+      textView!!.setHorizontallyScrolling(true)
+      textView!!.setSingleLine(true)
+      textView!!.ellipsize = sampleView.ellipsize
+      textView!!.gravity = sampleView.gravity
+      textView!!.transformationMethod = sampleView.transformationMethod
+      textView!!.layoutParams = sampleView.layoutParams
+      textView!!.typeface = sampleView.typeface
+      textView!!.setOnClickListener {
+        openEruda(Chrome.getUrl()!!)
+        popupWindow.dismiss()
+      }
+      view.addView(textView!!, view.childCount)
+      text = WeakReference(textView)
+    }
+  }
+
   override fun init() {
     if (Chrome.isSamsung) {
       hookActionMode(Chrome.load("com.sec.terrace.content.browser.TinActionModeCallback"))
+    } else if (Chrome.isQihoo) {
+      val WebViewExtensionClient = Chrome.load("com.qihoo.webkit.extension.WebViewExtensionClient")
+      popupWindowFinder =
+          WebViewExtensionClient.declaredConstructors.first().hookAfter {
+            val selectionMenuWrapper = it.thisObject
+            val showSelectionMenu =
+                findMethodOrNull(selectionMenuWrapper::class.java) { name == "showSelectionMenu" }
+            if (showSelectionMenu == null) return@hookAfter
+            val selectionMenu =
+                selectionMenuWrapper::class.java.declaredFields.first().get(selectionMenuWrapper)
+                    as kotlin.Any
+            val horizontalCustomPopupDialog =
+                selectionMenu::class
+                    .java
+                    .declaredFields
+                    .find { it.type.superclass == PopupWindow::class.java }!!
+                    .type
+            hookPopupWindow(horizontalCustomPopupDialog)
+            showSelectionMenu.hookAfter {
+              val view = it.args[0]
+              if (WebViewHook.WebView!!.isAssignableFrom(view::class.java)) Chrome.updateTab(view)
+              val url = Chrome.getUrl()!!
+              val titleId =
+                  if (isChromeXtFrontEnd(url)) R.string.main_menu_developer_tools
+                  else if (isUserScript(url)) R.string.main_menu_install_script
+                  else R.string.main_menu_eruda_console
+              text?.get()?.setText(titleId)
+            }
+          }
     } else if (Chrome.isMi) {
       val miuiFloatingSelectPopupWindow =
           Chrome.load("com.miui.org.chromium.content.browser.miui.MiuiFloatingSelectPopupWindow")
@@ -137,5 +197,6 @@ object ContextMenuHook : BaseHook() {
                 hookActionMode(it.args[0]::class.java)
               }
     }
+    isInit = true
   }
 }

@@ -101,6 +101,7 @@ object Local {
   var eruda_version: String?
 
   val anchorInChromeXt: Int
+
   // lineNumber of the anchor in GM.js, used to verify ChromeXt.dispatch
 
   init {
@@ -155,9 +156,9 @@ object Local {
     if (eruda.exists() || versionText != null) {
       val verisonReg = Regex(" eruda v(?<version>[\\d\\.]+) https://")
       val firstLine = (versionText ?: FileReader(eruda).use { it.readText() }).lines()[0]
-      val vMatchGroup = verisonReg.find(firstLine)?.groups as? MatchNamedGroupCollection
+      val vMatchGroup = verisonReg.find(firstLine)?.groups
       if (vMatchGroup != null) {
-        return vMatchGroup.get("version")?.value as String
+        return vMatchGroup[1]?.value as String
       } else if (eruda.exists()) {
         eruda.delete()
         Log.toast(ctx, "Eruda.js is corrupted")

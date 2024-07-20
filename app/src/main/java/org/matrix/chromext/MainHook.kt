@@ -49,9 +49,7 @@ val supportedPackages =
 class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
   override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
     Log.d(lpparam.processName + " started")
-    if (lpparam.packageName == "org.matrix.chromext") {
-      return
-    }
+    if (lpparam.packageName == "org.matrix.chromext") return
     if (supportedPackages.contains(lpparam.packageName)) {
       lpparam.classLoader
           .loadClass("org.chromium.ui.base.WindowAndroid")
@@ -59,6 +57,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
           .hookAfter {
             Chrome.init(it.args[0] as Context, lpparam.packageName)
             initHooks(UserScriptHook)
+            if (ContextMenuHook.isInit) return@hookAfter
             runCatching {
                   initHooks(
                       PreferenceHook,
@@ -75,18 +74,26 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
       Chrome.isMi =
           lpparam.packageName == "com.mi.globalbrowser" ||
               lpparam.packageName == "com.android.browser"
+      Chrome.isQihoo = lpparam.packageName == "com.qihoo.contents"
+
       if (ctx == null && Chrome.isMi) return
       // Wait to get the browser context of Mi Browser
 
-      if (ctx != null && lpparam.packageName != "android") {
-        Chrome.init(ctx, ctx.packageName)
-      }
+      if (ctx != null && lpparam.packageName != "android") Chrome.init(ctx, ctx.packageName)
 
       if (Chrome.isMi) {
         WebViewHook.WebView = Chrome.load("com.miui.webkit.WebView")
         WebViewHook.ViewClient = Chrome.load("com.android.browser.tab.TabWebViewClient")
         WebViewHook.ChromeClient = Chrome.load("com.android.browser.tab.TabWebChromeClient")
-        initHooks(WebViewHook, ContextMenuHook)
+        hookWebView()
+        return
+      }
+
+      if (Chrome.isQihoo) {
+        WebViewHook.WebView = Chrome.load("com.qihoo.webkit.WebView")
+        WebViewHook.ViewClient = Chrome.load("com.qihoo.webkit.WebViewClient")
+        WebViewHook.ChromeClient = Chrome.load("com.qihoo.webkit.WebChromeClient")
+        hookWebView()
         return
       }
 
@@ -110,9 +117,10 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
     if (WebViewHook.ChromeClient == null || WebViewHook.ViewClient == null) return
     if (WebViewHook.WebView == null) {
       runCatching {
-        WebViewHook.WebView = WebView::class.java
-        WebView.setWebContentsDebuggingEnabled(true)
-      }
+            WebViewHook.WebView = WebView::class.java
+            WebView.setWebContentsDebuggingEnabled(true)
+          }
+          .onFailure { if (BuildConfig.DEBUG) Log.ex(it) }
     }
     initHooks(WebViewHook, ContextMenuHook)
   }
@@ -125,8 +133,7 @@ class MainHook : IXposedHookLoadPackage, IXposedHookZygoteInit {
     hook.forEach {
       if (it.isInit) return@forEach
       it.init()
-      it.isInit = true
-      Log.d("${it.javaClass.simpleName} hooked")
+      if (it.isInit) Log.d("${it.javaClass.simpleName} hooked")
     }
   }
 }

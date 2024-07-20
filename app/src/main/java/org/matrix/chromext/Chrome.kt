@@ -38,6 +38,7 @@ object Chrome {
   var isDev = false
   var isEdge = false
   var isMi = false
+  var isQihoo = false
   var isSamsung = false
   var isVivaldi = false
   var isCocCoc = false
@@ -60,11 +61,13 @@ object Chrome {
     isDev = packageName.endsWith("canary") || packageName.endsWith("dev")
     isEdge = packageName.startsWith("com.microsoft.emmx")
     isMi = packageName == "com.mi.globalbrowser" || packageName == "com.android.browser"
+    isQihoo = packageName == "com.qihoo.contents"
     isSamsung = packageName.startsWith("com.sec.android.app.sbrowser")
     isVivaldi = packageName == "com.vivaldi.browser"
     @Suppress("DEPRECATION") val packageInfo = ctx.packageManager?.getPackageInfo(packageName, 0)
     version = packageInfo?.versionName
-    Log.i("Package: ${packageName}, v${version}")
+    version = (if (version?.startsWith("v") == true) "" else "v") + version
+    Log.i("Package: ${packageName}, ${version}")
 
     setupHttpCache(ctx)
     saveRedirectCookie()
@@ -162,7 +165,7 @@ object Chrome {
   fun checkTab(tab: Any?): Boolean {
     if (tab == null) return false
     if (UserScriptHook.isInit) {
-      return UserScriptProxy.mNativeAndroid.get(tab) != 0L
+      return tab.invokeMethod { name == "isInitialized" } as Boolean
     } else {
       return tab == getTab()
     }
@@ -186,31 +189,35 @@ object Chrome {
   }
 
   fun updateTab(tab: Any?) {
-    if (tab != null) {
+    if (tab != null && tab != getTab()) {
       mTab = WeakReference(tab)
       if (Chrome.isSamsung) {
-        val context = findField(tab::class.java) { name == "mContext" }
-        mContext = WeakReference(context.get(tab) as Context)
+        val context = findField(UserScriptProxy.tabImpl) { name == "mContext" }
+        mContext = WeakReference(context.get(UserScriptProxy.mTab.get(tab)) as Context)
       }
     }
   }
 
   fun getTabId(tab: Any?, url: String? = null): String {
-    if (WebViewHook.isInit) {
+    if (WebViewHook.isInit || Chrome.isSamsung) {
       if (url == null && getContext().mainLooper.getThread() != Thread.currentThread())
           Log.w("Url parameter is missing in a non-UI thread")
-      val attached = tab == Chrome.getTab()
+      val attached = !WebViewHook.isInit || tab == Chrome.getTab()
       val ids = filterTabs {
-        val description = JSONObject(getString("description"))
-        optString("type") == "page" &&
-            optString("url") == url!! &&
-            !description.optBoolean("never_attached") &&
-            !(attached && !description.optBoolean("attached"))
+        if (getString("description") == "") {
+          optString("type") == "page" && optString("url") == url!!
+        } else {
+          val description = JSONObject(getString("description"))
+          optString("type") == "page" &&
+              optString("url") == url!! &&
+              !description.optBoolean("never_attached") &&
+              !(attached && !description.optBoolean("attached"))
+        }
       }
       if (ids.size > 1) Log.i("Multiple possible tabIds matched with url ${url}")
       return ids.first()
     } else {
-      return getTab(tab)!!.invokeMethod() { name == "getId" }.toString()
+      return UserScriptProxy.getTabId(getTab(tab)!!)
     }
   }
 

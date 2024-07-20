@@ -1,6 +1,7 @@
 package org.matrix.chromext.hook
 
 import android.content.Context
+import android.os.Bundle
 import android.os.Handler
 import android.util.DisplayMetrics
 import android.view.Menu
@@ -10,6 +11,7 @@ import android.view.View
 import android.widget.ImageButton
 import android.widget.LinearLayout
 import de.robv.android.xposed.XC_MethodHook.Unhook
+import java.lang.reflect.Modifier
 import java.util.ArrayList
 import org.matrix.chromext.Chrome
 import org.matrix.chromext.Listener
@@ -32,13 +34,17 @@ object readerMode {
               findFieldOrNull(it::class.java) { type == PageMenuProxy.propertyModel } != null
         }!!
 
-    val activateReaderMode =
-        // There exist other methods with the same signatures
-        findMethod(readerModeManager::class.java) {
-          parameterTypes.size == 0 && returnType == Void.TYPE && name != "destroy"
+    readerModeManager::class
+        .java
+        .declaredMethods
+        .filter {
+          // There exist other methods with the same signatures, which might be tryShowingPrompt
+          it.parameterTypes.size == 0 &&
+              !Modifier.isStatic(it.modifiers) &&
+              it.returnType == Void.TYPE &&
+              it.name != "destroy"
         }
-
-    activateReaderMode.invoke(readerModeManager)
+        .forEach { it.invoke(readerModeManager) }
   }
 }
 
@@ -50,6 +56,7 @@ object PageMenuHook : BaseHook() {
 
   override fun init() {
 
+    if (ContextMenuHook.isInit) return
     val proxy = PageMenuProxy
 
     fun menuHandler(ctx: Context, id: Int): Boolean {
@@ -102,8 +109,14 @@ object PageMenuHook : BaseHook() {
     findMenuHook =
         findMethod(proxy.chromeTabbedActivity) {
               parameterTypes.size == 0 &&
-                  returnType.isInterface() &&
-                  returnType.declaredMethods.size >= 6
+                  returnType.declaredMethods.size >= 6 &&
+                  (returnType.declaredMethods.find {
+                    // Bundle getBundleForMenuItem(int itemId);
+                    it.returnType == Bundle::class.java && it.parameterTypes.size == 1
+                  } != null) &&
+                  (returnType.declaredFields.size == 0 ||
+                      returnType.declaredFields.find { it.type == Context::class.java } != null) &&
+                  (returnType.isInterface() || Modifier.isAbstract(returnType.modifiers))
             }
             // public AppMenuPropertiesDelegate createAppMenuPropertiesDelegate()
             .hookAfter {
@@ -116,7 +129,9 @@ object PageMenuHook : BaseHook() {
               val mActivityTabProvider =
                   findField(appMenuPropertiesDelegateImpl, true) {
                     type.interfaces.size == 1 &&
-                        findFieldOrNull(type.superclass) { type == Handler::class.java } != null
+                        findFieldOrNull(type.superclass as Class<*>) {
+                          type == Handler::class.java
+                        } != null
                   }
               mActivityTabProvider.setAccessible(true)
 
@@ -145,7 +160,9 @@ object PageMenuHook : BaseHook() {
               findMethod(appMenuPropertiesDelegateImpl, true) {
                     parameterTypes.size == 2 &&
                         parameterTypes.first() == Menu::class.java &&
-                        returnType == Void.TYPE
+                        returnType == Void.TYPE &&
+                        !Modifier.isStatic(modifiers) &&
+                        !Modifier.isAbstract(modifiers)
                   }
                   // public void prepareMenu(Menu menu, AppMenuHandler handler)
                   .hookAfter inflate@{
@@ -168,16 +185,16 @@ object PageMenuHook : BaseHook() {
                       mId.setAccessible(false)
                     }
 
-                    val skip = menu.size() <= 20 || isChromeScheme(url)
-                    // Inflate only for the main_menu, which has more than 20 items at least
-
-                    if (skip && !isUserScript(url)) return@inflate
-                    MenuInflater(ctx).inflate(R.menu.main_menu, menu)
-
                     val mItems = menu::class.java.getDeclaredField("mItems")
                     mItems.setAccessible(true)
 
                     @Suppress("UNCHECKED_CAST") val items = mItems.get(menu) as ArrayList<MenuItem>
+
+                    val skip = items.filter { it.isVisible() }.size <= 10 || isChromeScheme(url)
+                    // Inflate only for the main_menu, which has more than visible 10 items at least
+
+                    if (skip && !isUserScript(url)) return@inflate
+                    MenuInflater(ctx).inflate(R.menu.main_menu, menu)
 
                     // Show items with indices in main_menu.xml
                     val toShow = mutableListOf<Int>(1)
@@ -229,5 +246,6 @@ object PageMenuHook : BaseHook() {
                     mItems.setAccessible(false)
                   }
             }
+    isInit = true
   }
 }

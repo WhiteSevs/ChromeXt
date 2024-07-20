@@ -75,7 +75,8 @@ val invalidUserScriptUrls = mutableListOf<String>()
 
 fun isUserScript(url: String?, path: String? = null): Boolean {
   if (url == null) return false
-  if (url.endsWith(".user.js")) {
+  if (url.endsWith(".user.js") ||
+      (Chrome.isEdge && url.endsWith(".js") && url.startsWith("file://"))) {
     if (invalidUserScriptUrls.contains(url)) return false
     invalidUserScriptDomains.forEach { if (url.startsWith("https://" + it) == true) return false }
     return true
@@ -108,7 +109,7 @@ fun isChromeXtFrontEnd(url: String?): Boolean {
   return false
 }
 
-private val sandboxHosts = listOf("raw.githubusercontent.com")
+private val sandboxHosts = listOf("raw.githubusercontent.com", "gist.githubusercontent.com")
 
 fun shouldBypassSandbox(url: String?): Boolean {
   sandboxHosts.forEach { if (url?.startsWith("https://" + it) == true) return true }

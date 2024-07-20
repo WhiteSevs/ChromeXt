@@ -9,6 +9,7 @@ import org.matrix.chromext.Listener
 import org.matrix.chromext.script.Local
 import org.matrix.chromext.script.ScriptDbManager
 import org.matrix.chromext.utils.Log
+import org.matrix.chromext.utils.findField
 import org.matrix.chromext.utils.findMethod
 import org.matrix.chromext.utils.hookAfter
 import org.matrix.chromext.utils.hookBefore
@@ -34,9 +35,11 @@ object WebViewHook : BaseHook() {
 
   override fun init() {
 
-    findMethod(ChromeClient!!, true) { name == "onConsoleMessage" }
+    findMethod(ChromeClient!!, true) { name == "onConsoleMessage" && parameterCount == 1 }
         // public boolean onConsoleMessage (ConsoleMessage consoleMessage)
         .hookAfter {
+          // Don't use ConsoleMessage to specify this method since Mi Browser uses its own
+          // implementation
           // This should be the way to communicate with the front-end of ChromeXt
           val chromeClient = it.thisObject
           val consoleMessage = it.args[0]
@@ -51,7 +54,13 @@ object WebViewHook : BaseHook() {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                   records
                       .find {
-                        it.get()?.invokeMethod { name == "getWebChromeClient" } == chromeClient
+                        if (Chrome.isQihoo) {
+                              val mProvider = findField(WebView!!) { name == "mProvider" }
+                              mProvider.get(it.get())
+                            } else {
+                              it.get()
+                            }
+                            ?.invokeMethod { name == "getWebChromeClient" } == chromeClient
                       }
                       ?.get()
                 } else Chrome.getTab()
@@ -79,9 +88,13 @@ object WebViewHook : BaseHook() {
 
     findMethod(ViewClient!!, true) { name == "onPageStarted" }
         // public void onPageStarted (WebView view, String url, Bitmap favicon)
-        .hookAfter { onUpdateUrl(it.args[1] as String, it.args[0]) }
+        .hookAfter {
+          if (Chrome.isQihoo && it.thisObject::class.java.declaredMethods.size > 1) return@hookAfter
+          onUpdateUrl(it.args[1] as String, it.args[0])
+        }
 
     findMethod(Activity::class.java) { name == "onStop" }
         .hookBefore { ScriptDbManager.updateScriptStorage() }
+    isInit = true
   }
 }
